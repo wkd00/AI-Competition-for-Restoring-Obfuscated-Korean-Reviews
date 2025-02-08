@@ -52,6 +52,21 @@ class AirbnbfyCrawler:
             print(f"변환 실패, 오류: {e}")
             return None
 
+    def fill_missing_inputs(self, df):
+        """input이 비어있는 행들에 대해 크롤링을 수행하여 채움"""
+        driver = self._initialize_driver()
+        self.open_site(driver)
+
+        for i, row in df.iterrows():
+            if pd.isna(row["input"]) or row["input"].strip() == "":
+                self.input_sentence(driver, row["output"])
+                filled_input = self.click_convert_button(driver)
+                if filled_input:
+                    df.at[i, "input"] = filled_input
+
+        driver.quit()
+        return df
+
     def process_batch(self, batch_data, max_existing_id, results_list):
         """데이터 배치를 처리하여 난독화된 문장을 생성"""
         driver = self._initialize_driver()
@@ -59,7 +74,7 @@ class AirbnbfyCrawler:
         local_results = []
         
         for _, row in batch_data.iterrows():
-            original_text = row["input"]
+            original_text = row["output"]  # ✅ output 열을 입력으로 사용
             self.input_sentence(driver, original_text)
 
             for j in range(self.augmentation_factor):
@@ -67,7 +82,7 @@ class AirbnbfyCrawler:
                 if obfuscated_text:
                     max_existing_id += 1
                     new_id = f"TRAIN_{max_existing_id:05d}"
-                    local_results.append({"input": original_text, "output": obfuscated_text, "ID": new_id})
+                    local_results.append({ "ID": new_id, "output": original_text, "input": obfuscated_text})  # ✅ output → input으로 변경
 
         results_list.extend(local_results)
         driver.quit()  # 프로세스마다 브라우저 종료
@@ -76,9 +91,12 @@ class AirbnbfyCrawler:
         """멀티프로세싱을 활용한 병렬 크롤링"""
         df = pd.read_csv(input_file)
 
-        # 'input' 및 'ID' 열이 존재하는지 확인
-        if "input" not in df.columns or "ID" not in df.columns:
-            raise ValueError("CSV 파일에 'input' 또는 'ID' 열이 존재하지 않습니다.")
+        # 'output' 및 'ID' 열이 존재하는지 확인
+        if "output" not in df.columns or "ID" not in df.columns:
+            raise ValueError("CSV 파일에 'output' 또는 'ID' 열이 존재하지 않습니다.")
+
+        # 빈 input 값을 채운 후 진행
+        df = self.fill_missing_inputs(df)
 
         # 기존 ID 값 찾기 (TRAIN_000XX 형식 중 가장 큰 값)
         df["ID"] = df["ID"].str.extract(r'(\d+)').astype(int)  # 숫자 부분만 추출

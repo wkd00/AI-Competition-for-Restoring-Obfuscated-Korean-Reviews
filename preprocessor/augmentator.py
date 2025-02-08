@@ -3,90 +3,115 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import os
 import re
-from tqdm import tqdm  # 진행 상태 표시
+from tqdm import tqdm  # Progress bar
 
 def augment_reviews(input_path, augmentation_factor=2, batch_size=16):
     """
-    주어진 CSV 파일의 'input' 열을 deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B 모델을 활용하여 배치 단위로 증강합니다.
-    기존 데이터의 마지막 ID에서 이어서 새로운 데이터를 추가합니다.
+    Augments Korean review data using 'beomi/gemma-ko-7b' model.
+    New data consists of an empty 'input' column, a newly generated 'output' column, and a sequential 'ID' column.
     
-    :param input_path: 원본 리뷰 데이터가 포함된 CSV 파일 경로
-    :param augmentation_factor: 각 리뷰당 생성할 유사 리뷰 개수 (기본값: 2)
-    :param batch_size: 한 번에 처리할 문장의 개수 (기본값: 4)
+    :param input_path: Path to the original CSV file containing review data.
+    :param augmentation_factor: Number of new similar reviews to generate per existing review (default: 2).
+    :param batch_size: Number of reviews to process per batch (default: 16).
     """
 
-    # CUDA 필수 사용: CUDA가 없으면 실행 중지
+    # Ensure CUDA is available
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA가 필요합니다. GPU에서 실행해주세요.")
+        raise RuntimeError("🚨 CUDA is required. Please run on a GPU-enabled device.")
 
-    print("CUDA 사용 가능: GPU에서 실행합니다.")
+    print("✅ CUDA detected: Running on GPU.")
 
-    # 모델 및 토크나이저 로드
+    # Load model and tokenizer
     model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # 모델 로드 (양자화 + Flash Attention 2)
     model = AutoModelForCausalLM.from_pretrained(
         model_name
-    ).to("cuda")  # 반드시 CUDA에서 실행
+    )
+    model.to("cuda")
 
-    # CSV 파일 읽기
-    df = pd.read_csv(input_path)
-    
-    # 'input' 및 'ID' 열이 존재하는지 확인
-    if "input" not in df.columns or "ID" not in df.columns:
-        raise ValueError("CSV 파일에 'input' 또는 'ID' 열이 존재하지 않습니다.")
-    
+
+    # Load CSV file
+    try:
+        df = pd.read_csv(input_path, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        df = pd.read_csv(input_path, encoding="cp949")
+
+    # Ensure required columns exist
+    if "output" not in df.columns or "ID" not in df.columns:
+        raise ValueError("🚨 CSV file must contain 'output' and 'ID' columns.")
+
     augmented_data = []
 
-    # 기존 ID에서 숫자 부분 추출
+    # Extract numerical part of existing IDs
     df["ID"] = df["ID"].astype(str)
     df["ID_num"] = df["ID"].apply(lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else -1)
     
-    # 가장 큰 ID 값 찾기
-    max_existing_id = df["ID_num"].max() if not df["ID_num"].isnull().all() else -1
+    # Find the last ID value
+    max_id = df["ID_num"].max() if not df["ID_num"].isnull().all() else -1
 
-    # 리뷰 리스트 준비
-    review_list = df["input"].tolist()
+    # Prepare the list of reviews to augment
+    review_list = df["output"].tolist()
 
-    # Batch 단위로 모델 실행
-    for i in tqdm(range(0, len(review_list), batch_size), desc="Processing Batches"):
-        batch_texts = review_list[i : i + batch_size]  # 배치 크기만큼 가져오기
-        batch_prompts = [f"다음 문장과 유사한 한국어 리뷰를 생성하세요: {text}\n새로운 리뷰:" for text in batch_texts]
+    # Process in batches
+    for i in tqdm(range(0, len(review_list), batch_size), desc="🔄 Processing batches"):
+        batch_texts = review_list[i : i + batch_size]  # Get batch
+        batch_prompts = [
+            f"""숙박시설 리뷰입니다. {review}
+            """
+            for review in batch_texts
+            ]
 
-        for _ in range(augmentation_factor):  # 각 문장당 augmentation_factor 만큼 생성
-            inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to("cuda")
+        for _ in range(augmentation_factor):  # Generate multiple outputs per review
+            inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True).to("cuda")
 
             with torch.no_grad():
-                outputs = model.generate(**inputs, max_new_tokens=50, temperature=0.7)
+                outputs = model.generate(
+                    **inputs, max_new_tokens = 256, do_sample = True, temperature = 0.7
+                    , top_p = 0.9
+                    )
 
-            # 각 문장의 생성 결과 저장
+            # Store generated results
             for j, output in enumerate(outputs):
-                generated_review = tokenizer.decode(output, skip_special_tokens=True).split("새로운 리뷰:")[-1].strip()
-                
-                # 새로운 ID 생성
-                max_existing_id += 1
-                new_id = f"TRAIN_{max_existing_id:05d}"
+                # 기존 코드에서는 아래와 같이 "그리고:"를 기준으로 분리하고 있었음:
+                # generated_review = tokenizer.decode(output, skip_special_tokens=True).split("그리고:")[-1].strip()
 
-                augmented_data.append({"input": batch_texts[j], "output": generated_review, "ID": new_id})
+                # 프롬프트(입력 리뷰) 이후의 텍스트만 출력하고 싶다면, 프롬프트의 길이에 맞춰 잘라낼 수 있습니다.
+                decoded_output = tokenizer.decode(output, skip_special_tokens=True)
+                prompt_text = batch_prompts[j]
+                # 만약 생성 결과가 프롬프트로 시작한다면, 프롬프트 부분을 잘라냅니다.
+                if decoded_output.startswith(prompt_text):
+                    generated_review = decoded_output[len(prompt_text):].strip()
+                else:
+                    generated_review = decoded_output.strip()
 
-    # 결과를 데이터프레임으로 변환
+                # Generate new ID
+                max_id += 1
+                new_id = f"TRAIN_{max_id:05d}"
+
+                augmented_data.append({ "ID": new_id, "input": "", "output": generated_review})
+
+    # Convert results to DataFrame
     augmented_df = pd.DataFrame(augmented_data)
 
-    # 기존 데이터와 새로운 데이터 합치기
+    # Combine with the original dataset
     final_df = pd.concat([df.drop(columns=["ID_num"]), augmented_df], ignore_index=True)
 
-    # 원본 파일과 동일한 디렉토리에 저장할 파일명 설정
-    directory = os.path.dirname(input_path)  # 원본 파일이 있는 폴더 경로
-    base_name = os.path.basename(input_path)  # 파일명 추출
+    # Generate new filename
+    folder_path = os.path.dirname(input_path)
+    base_filename = os.path.basename(input_path)
 
-    # 파일명 변경: "augmented_X.csv" → "preprocessed_X.csv"
-    if base_name.startswith("augmented_"):
-        new_filename = "preprocessed_" + base_name.replace("augmented_", "", 1)
+    # Modify filename: "train.csv" → "augmented_train.csv"
+    if base_filename.endswith(".csv"):
+        file_name, ext = os.path.splitext(base_filename)
+        new_filename = f"augmented_{file_name}.csv"
     else:
-        new_filename = "preprocessed_" + base_name
+        new_filename = f"augmented_{base_filename}"
 
-    output_path = os.path.join(directory, new_filename)  # 저장 경로 설정
+    output_path = os.path.join(folder_path, new_filename)
 
-    # 결과 저장
+    # Save final dataset
     final_df.to_csv(output_path, index=False, encoding="utf-8-sig")
     
-    print(f"✅ 리뷰 데이터 증강 완료! 저장 경로: {output_path}")
+    print(f"✅ Review data augmentation complete! Saved to: {output_path}")
