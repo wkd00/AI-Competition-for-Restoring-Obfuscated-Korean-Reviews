@@ -22,10 +22,10 @@ def augment_reviews(input_path, augmentation_factor=2, batch_size=16):
     print("✅ CUDA detected: Running on GPU.")
 
     # Load model and tokenizer
-    model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+    model_name = "OLAIR/ko-r1-1.5b-preview"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    # 모델 로드 (양자화 + Flash Attention 2)
+    # 모델 로드 
     model = AutoModelForCausalLM.from_pretrained(
         model_name
     )
@@ -58,8 +58,17 @@ def augment_reviews(input_path, augmentation_factor=2, batch_size=16):
     for i in tqdm(range(0, len(review_list), batch_size), desc="🔄 Processing batches"):
         batch_texts = review_list[i : i + batch_size]  # Get batch
         batch_prompts = [
-            f"""숙박시설 리뷰입니다. {review}
-            """
+            f"""[지시사항]
+            - 아래 '원본 리뷰'는 실제 숙박시설 후기입니다.
+            - 이 리뷰의 스타일(자연스럽고 깔끔하며 정확한 한국어 표현)을 참고하되, 
+            원본 리뷰의 내용을 그대로 이어서 작성하지 말고 완전히 새로운 가상의 숙박시설 후기를 작성하세요.
+            - 새 리뷰는 원본 리뷰와 비슷한 길이로 작성하고, 실제 후기를 그대로 복사하지 않도록 주의하세요.
+            - 답변 내용은 숙소 리뷰 내용으로만 구성하세요. 너무 길지 않도록 주의하세요.
+
+            [입력]
+            원본 리뷰:{review}
+            [출력]
+            새 리뷰:"""
             for review in batch_texts
             ]
 
@@ -68,23 +77,22 @@ def augment_reviews(input_path, augmentation_factor=2, batch_size=16):
 
             with torch.no_grad():
                 outputs = model.generate(
-                    **inputs, max_new_tokens = 256, do_sample = True, temperature = 0.7
-                    , top_p = 0.9
+                    **inputs, max_new_tokens = 1024, do_sample = True, temperature = 0.6
                     )
 
             # Store generated results
             for j, output in enumerate(outputs):
                 # 기존 코드에서는 아래와 같이 "그리고:"를 기준으로 분리하고 있었음:
-                # generated_review = tokenizer.decode(output, skip_special_tokens=True).split("그리고:")[-1].strip()
+                generated_review = tokenizer.decode(output, skip_special_tokens=True).split("새 리뷰:")[-1].strip()
 
-                # 프롬프트(입력 리뷰) 이후의 텍스트만 출력하고 싶다면, 프롬프트의 길이에 맞춰 잘라낼 수 있습니다.
-                decoded_output = tokenizer.decode(output, skip_special_tokens=True)
-                prompt_text = batch_prompts[j]
-                # 만약 생성 결과가 프롬프트로 시작한다면, 프롬프트 부분을 잘라냅니다.
-                if decoded_output.startswith(prompt_text):
-                    generated_review = decoded_output[len(prompt_text):].strip()
-                else:
-                    generated_review = decoded_output.strip()
+                # # 프롬프트(입력 리뷰) 이후의 텍스트만 출력하고 싶다면, 프롬프트의 길이에 맞춰 잘라낼 수 있습니다.
+                # decoded_output = tokenizer.decode(output, skip_special_tokens=True)
+                # prompt_text = batch_prompts[j]
+                # # 만약 생성 결과가 프롬프트로 시작한다면, 프롬프트 부분을 잘라냅니다.
+                # if decoded_output.startswith(prompt_text):
+                #     generated_review = decoded_output[len(prompt_text):].strip()
+                # else:
+                #     generated_review = decoded_output.strip()
 
                 # Generate new ID
                 max_id += 1
