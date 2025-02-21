@@ -1,5 +1,6 @@
 import random
 import pandas as pd
+import re
 
 def apply_liaison(text: str) -> str:
     """
@@ -442,25 +443,37 @@ def final_transform_sentence(text: str) -> str:
     
     return " ".join(new_tokens)
 
-def main():  
-    df_train = pd.read_csv("train.csv")
 
-    # 각 문장에 대해 오타 생성 (output 열을 바탕으로 input 열 생성)
-    df_train["input"] = df_train["output"].apply(final_transform_sentence)
+def clean_text(text: str) -> str:
+    """
+    양쪽 공백 제거 및 단어 사이의 연속 공백을 한 칸으로 변경합니다.
+    """
+    text = text.strip()
+    text = re.sub(r"\s{2,}", " ", text)
+    return text
 
-    # 컬럼 정리 (ID, input, output 형식 유지)
-    df_noisy = df_train[["ID", "input", "output"]]
+def main():
+    df_train = pd.read_csv("../database/train/train.csv")
+    num_variants = 10  # 각 output 문장당 생성할 noise 문장의 개수
 
-    # input과 output 열의 앞뒤 공백 제거 및 연속된 공백은 한 칸으로 치환
-    df_noisy["input"] = df_noisy["input"].str.strip().str.replace(r"\s{2,}", " ", regex=True)
-    df_noisy["output"] = df_noisy["output"].str.strip().str.replace(r"\s{2,}", " ", regex=True)
+    rows = []
+    for _, row in df_train.iterrows():
+        original = clean_text(row["output"])
+        # 각 output 문장에 대해 여러 noise 문장을 생성
+        for i in range(num_variants):
+            noise = final_transform_sentence(original)
+            noise = clean_text(noise)
+            rows.append({
+                "ID": row["ID"],
+                "input": noise,
+                "output": original
+            })
 
-    # 결과 CSV 파일로 저장 (인덱스는 제외)
-    output_path = "C:/Users/Deokjae/Desktop/Dacon/noisy_train.csv"
+    df_noisy = pd.DataFrame(rows, columns=["ID", "input", "output"])
+    output_path = "../database/train/noisy_train.csv"
     df_noisy.to_csv(output_path, index=False)
-
     print(f"변환 완료, 저장 위치: {output_path}")
 
-if __name__ == "__main__":  
+if __name__ == "__main__":
     main()
 
