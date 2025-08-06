@@ -1,4 +1,4 @@
-# NKTL-Noised-Korean-Translator-by-LSTM
+# 난독화된 한글 리뷰 복원 AI 경진대회
 
 ### **LSTM을 활용한 난독화된 한글 리뷰 복원**  
  **윤희찬, 장덕재, 조태연**  
